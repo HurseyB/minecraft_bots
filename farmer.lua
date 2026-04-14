@@ -1,43 +1,45 @@
 -- ============================================================
---  farmer.lua  |  CC:Tweaked Turtle Crop Collector
---  Debug mode is ON by default. Set DEBUG = false to silence.
+--  farmer.lua  |  CC:Tweaked Turtle Crop Farmer
+--  Farms carrots (south side) and potatoes (north side)
+--  Debug mode ON by default. Set DEBUG = false to silence.
 -- ============================================================
 
 local DEBUG = true
 
 -- Internal State
-local pos     = { x = 0, y = 0, z = 0 }
-local facing  = 1  -- 0=North  1=East  2=South  3=West
+local pos    = { x = 0, y = 0, z = 0 }
+local facing = 1  -- 0=North  1=East  2=South  3=West
 
 local FACING_NAME = { [0]="North", [1]="East", [2]="South", [3]="West" }
+
+-- Seeds for each side
+local SEED_EAST = "minecraft:potato"   -- potatoes on east side
+local SEED_WEST = "minecraft:carrot"   -- carrots on west side
+
+-- Fully grown age for carrots and potatoes
+local MAX_AGE = 7
 
 -- ── Debug helpers ────────────────────────────────────────────
 
 local function dbg(msg)
-    if DEBUG then
-        print("[DBG] " .. msg)
-    end
+    if DEBUG then print("[DBG] " .. msg) end
 end
 
 local function dbgState(label)
     if DEBUG then
         print(string.format("[DBG] %s | facing=%s(%d) pos=(%d,%d,%d)",
-            label,
-            FACING_NAME[facing] or "?", facing,
+            label, FACING_NAME[facing] or "?", facing,
             pos.x, pos.y, pos.z))
     end
 end
 
 -- ── setHeading ───────────────────────────────────────────────
---  Turns the turtle to face `target` using the shortest path.
 
 local function setHeading(target)
     dbg("setHeading: " .. FACING_NAME[facing] .. " -> " .. FACING_NAME[target])
-
     local diff = (target - facing) % 4
-
     if diff == 0 then
-        -- already facing the right way
+        -- already correct
     elseif diff == 1 then
         turtle.turnRight()
         facing = (facing + 1) % 4
@@ -46,22 +48,17 @@ local function setHeading(target)
         turtle.turnRight()
         facing = (facing + 2) % 4
     elseif diff == 3 then
-        -- 3 rights == 1 left; turn left
         turtle.turnLeft()
         facing = (facing + 3) % 4
     end
-
     dbg("setHeading done: now facing " .. FACING_NAME[facing])
 end
 
 -- ── move ─────────────────────────────────────────────────────
---  Moves the turtle and keeps pos in sync.
---  dir: "f" | "u" | "d"
 
 local function move(dir, blocks)
     for i = 1, blocks do
         local success = false
-
         if     dir == "f" then success = turtle.forward()
         elseif dir == "u" then success = turtle.up()
         elseif dir == "d" then success = turtle.down()
@@ -77,56 +74,92 @@ local function move(dir, blocks)
             elseif dir == "u" then pos.y = pos.y + 1
             elseif dir == "d" then pos.y = pos.y - 1
             end
-
             dbg(string.format("move %s %d/%d -> pos=(%d,%d,%d)",
                 dir, i, blocks, pos.x, pos.y, pos.z))
         else
-            -- Something is blocking the turtle
             print(string.format("[WARN] move '%s' blocked at step %d/%d | pos=(%d,%d,%d)",
                 dir, i, blocks, pos.x, pos.y, pos.z))
         end
     end
 end
 
--- ── pullItems ────────────────────────────────────────────────
---  Sucks from the chest in front until empty, keeps only
---  items in `targets`, drops everything else back.
+-- ── descendToGround ──────────────────────────────────────────
+-- Moves down repeatedly until turtle.down() fails
 
-local function pullItems(targets)
-    local attempts = 0
-    while turtle.suck() and attempts < 64 do
-        attempts = attempts + 1
-        local data = turtle.getItemDetail()
-        local keep = false
+local function descendToGround()
+    dbg("Descending to ground...")
+    while turtle.down() do
+        pos.y = pos.y - 1
+        dbg("Descended, y=" .. pos.y)
+    end
+    dbg("Hit ground at y=" .. pos.y)
+end
 
-        if data then
-            for _, name in ipairs(targets) do
-                if data.name == name then
-                    keep = true
-                    break
-                end
-            end
-        end
+-- ── findSeedSlot ─────────────────────────────────────────────
+-- Returns the slot number containing the given seed, or nil
 
-        if keep then
-            dbg("Kept: " .. (data and data.name or "?"))
-        else
-            turtle.drop()
-            dbg("Dropped back: " .. (data and data.name or "?"))
+local function findSeedSlot(seedName)
+    for i = 1, 16 do
+        local data = turtle.getItemDetail(i)
+        if data and data.name == seedName then
+            return i
         end
     end
-    dbg("pullItems done after " .. attempts .. " pulls")
+    return nil
+end
+
+-- ── harvestAndReplant ────────────────────────────────────────
+-- Checks the crop in front. If fully grown: digs and replants.
+
+local function harvestAndReplant(seedName)
+    local ok, data = turtle.inspect()
+
+    if not ok then
+        dbg("No block in front, skipping")
+        return
+    end
+
+    dbg("Inspecting: " .. data.name)
+
+    local isCrop = (data.name == "minecraft:carrots" or data.name == "minecraft:potatoes")
+    if not isCrop then
+        dbg("Not a crop block, skipping")
+        return
+    end
+
+    local age = data.state and data.state.age or 0
+    dbg("Crop age: " .. age .. " / " .. MAX_AGE)
+
+    if age < MAX_AGE then
+        dbg("Not fully grown, skipping")
+        return
+    end
+
+    dbg("Harvesting!")
+    turtle.dig()
+
+    local slot = findSeedSlot(seedName)
+    if slot then
+        turtle.select(slot)
+        turtle.place()
+        dbg("Replanted with " .. seedName)
+        turtle.select(1)
+    else
+        print("[WARN] No seeds found for " .. seedName .. " - could not replant!")
+    end
 end
 
 -- ── dropOff ──────────────────────────────────────────────────
---  Drops carrots and potatoes into whatever is in front.
+-- Drops carrots and potatoes into whatever is in front
 
 local function dropOff()
     dbg("Starting drop-off")
     for i = 1, 16 do
         turtle.select(i)
         local data = turtle.getItemDetail()
-        if data and (data.name:find("carrot") or data.name:find("potato")) then
+        if data and (data.name == "minecraft:carrot"
+                  or data.name == "minecraft:potato"
+                  or data.name == "minecraft:poisonous_potato") then
             dbg("Dropping slot " .. i .. ": " .. data.name)
             turtle.drop()
         end
@@ -140,74 +173,139 @@ end
 -- ════════════════════════════════════════════════════════════
 
 print("Starting farmer. DEBUG=" .. tostring(DEBUG))
-print("Assumed start: facing=" .. FACING_NAME[facing] .. " pos=(0,0,0)")
-print("Edit 'facing' at top of script if turtle is placed differently.")
+print("Assumed start: facing=East pos=(0,0,0)")
 
 while true do
     dbgState("── Cycle START")
 
+    -- ── Outward Path ─────────────────────────────────────────
+
     -- 1. Face West, forward 1
     setHeading(3)
     move("f", 1)
-    dbgState("Step 1 done")
+    dbgState("Step 1: West 1")
 
     -- 2. Face South, up 3, forward 4
     setHeading(2)
     move("u", 3)
     move("f", 4)
-    dbgState("Step 2 done")
+    dbgState("Step 2: Up 3, South 4")
 
-    -- 3. Face East, forward 11
+    -- 3. Face East, forward 12
     setHeading(1)
-    move("f", 11)
-    dbgState("Step 3 done")
+    move("f", 12)
+    dbgState("Step 3: East 12")
 
-    -- 4. Face South, forward 13
+    -- 4. Face South, forward 11
     setHeading(2)
-    move("f", 13)
-    dbgState("Step 4 done")
+    move("f", 11)
+    dbgState("Step 4: South 11")
 
-    -- 5. Face North, down 3, pull carrots
+    -- 5. Descend to ground
+    descendToGround()
+    dbgState("Step 5: at ground level")
+
+    -- ── Farming Pass ─────────────────────────────────────────
+    -- At each position: harvest East (potatoes), harvest West
+    -- (carrots), then move North. Stop when North is blocked.
+
+    local rowsDone = 0
+
+    while true do
+        dbgState("Farm row " .. rowsDone)
+
+        -- East side = potatoes
+        setHeading(1)
+        harvestAndReplant(SEED_EAST)
+
+        -- West side = carrots
+        setHeading(3)
+        harvestAndReplant(SEED_WEST)
+
+        -- Try to move North
+        setHeading(0)
+        local moved = turtle.forward()
+        if moved then
+            pos.z = pos.z - 1
+            rowsDone = rowsDone + 1
+            dbg("Moved North, row " .. rowsDone)
+        else
+            dbg("Can't move North - end of farm rows after " .. rowsDone .. " rows")
+            break
+        end
+    end
+
+    dbgState("Farming pass complete")
+
+    -- ── Return Path ───────────────────────────────────────────
+    -- Move South until we can ascend 3 full blocks
+
+    dbg("Searching for clearance to ascend 3 blocks...")
+    setHeading(2)
+
+    while true do
+        local up1 = turtle.up()
+        if up1 then
+            pos.y = pos.y + 1
+            local up2 = turtle.up()
+            if up2 then
+                pos.y = pos.y + 1
+                local up3 = turtle.up()
+                if up3 then
+                    pos.y = pos.y + 1
+                    dbg("Ascended 3 blocks successfully")
+                    break
+                else
+                    -- Only 2 blocks of clearance, back down and try further South
+                    turtle.down(); pos.y = pos.y - 1
+                    turtle.down(); pos.y = pos.y - 1
+                end
+            else
+                -- Only 1 block of clearance, back down and try further South
+                turtle.down(); pos.y = pos.y - 1
+            end
+        end
+
+        local moved = turtle.forward()
+        if moved then
+            pos.z = pos.z + 1
+            dbg("Moved South looking for ascent spot, z=" .. pos.z)
+        else
+            print("[WARN] Blocked moving South during return - check for obstructions!")
+            break
+        end
+    end
+
+    dbgState("Ascended, heading home")
+
+    -- North 11
     setHeading(0)
-    move("d", 3)
-    dbgState("Step 5 before pullItems")
-    pullItems({ "minecraft:carrot" })
+    move("f", 11)
+    dbgState("Return: North 11")
 
-    -- 6. Face East, forward 2
-    setHeading(1)
-    move("f", 2)
-    dbgState("Step 6 done")
-
-    -- 7. Face North, pull potatoes
-    setHeading(0)
-    dbgState("Step 7 before pullItems")
-    pullItems({ "minecraft:potato", "minecraft:poisonous_potato" })
-
-    -- 8. Up 3, forward 13
-    move("u", 3)
-    move("f", 13)
-    dbgState("Step 8 done")
-
-    -- 9. Face West, forward 13
+    -- West 12
     setHeading(3)
-    move("f", 13)
-    dbgState("Step 9 done")
+    move("f", 12)
+    dbgState("Return: West 12")
 
-    -- 10. Face North, forward 4
+    -- North 4
     setHeading(0)
     move("f", 4)
-    dbgState("Step 10 done")
+    dbgState("Return: North 4")
 
-    -- 11. Down 3, face East, forward 1
+    -- Down 3
     move("d", 3)
+    dbgState("Return: Down 3")
+
+    -- East 1 (home, chest in front)
     setHeading(1)
     move("f", 1)
-    dbgState("Step 11 done")
+    dbgState("Return: East 1 (home)")
 
-    -- 12. Drop off
+    -- Drop off
     dropOff()
-    dbgState("── Cycle END (should match Cycle START coords)")
 
+    dbgState("── Cycle END")
     print("Cycle complete. Restarting...")
     print("─────────────────────────────────")
 end
