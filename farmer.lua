@@ -211,6 +211,8 @@ local function harvestAndReplant(seedName)
 
     dbg("Harvesting!")
     turtle.dig()
+    sleep(0.5)
+    while turtle.suck() do end
 
     local slot = findSeedSlot(seedName)
     if slot then
@@ -388,6 +390,8 @@ while true do
     clearState()
 
     dbgState("── Cycle END")
-    print("Cycle complete. Restarting...")
+    print("Cycle complete. Sleeping for 3 minutes...")
+    sleep(180)
+    print("Waking up. Restarting...")
     print("─────────────────────────────────")
 end
