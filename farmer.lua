@@ -12,6 +12,9 @@ local facing = 1  -- 0=North  1=East  2=South  3=West
 
 local FACING_NAME = { [0]="North", [1]="East", [2]="South", [3]="West" }
 
+-- State file for resume after fuel loss
+local STATE_FILE = "farmer_state.txt"
+
 -- Seeds for each side
 local SEED_EAST = "minecraft:potato"   -- potatoes on east side
 local SEED_WEST = "minecraft:carrot"   -- carrots on west side
@@ -30,6 +33,73 @@ local function dbgState(label)
         print(string.format("[DBG] %s | facing=%s(%d) pos=(%d,%d,%d)",
             label, FACING_NAME[facing] or "?", facing,
             pos.x, pos.y, pos.z))
+    end
+end
+
+-- ── State persistence ────────────────────────────────────────
+
+local function saveState()
+    local f = fs.open(STATE_FILE, "w")
+    if f then
+        f.writeLine(pos.x)
+        f.writeLine(pos.y)
+        f.writeLine(pos.z)
+        f.writeLine(facing)
+        f.close()
+        dbg("State saved: pos=(" .. pos.x .. "," .. pos.y .. "," .. pos.z .. ") facing=" .. facing)
+    else
+        print("[WARN] Could not save state file!")
+    end
+end
+
+local function loadState()
+    if not fs.exists(STATE_FILE) then
+        dbg("No state file found, starting fresh")
+        return false
+    end
+    local f = fs.open(STATE_FILE, "r")
+    if f then
+        local x = tonumber(f.readLine())
+        local y = tonumber(f.readLine())
+        local z = tonumber(f.readLine())
+        local fc = tonumber(f.readLine())
+        f.close()
+        if x and y and z and fc then
+            pos.x = x; pos.y = y; pos.z = z; facing = fc
+            print("Resumed from saved state:")
+            print("  pos=(" .. x .. "," .. y .. "," .. z .. ") facing=" .. FACING_NAME[fc])
+            return true
+        end
+    end
+    print("[WARN] State file corrupted, starting fresh")
+    return false
+end
+
+local function clearState()
+    if fs.exists(STATE_FILE) then
+        fs.delete(STATE_FILE)
+        dbg("State file cleared")
+    end
+end
+
+-- ── Fuel check ───────────────────────────────────────────────
+-- Saves state and halts if out of fuel.
+-- Warns if fuel is getting low.
+
+local FUEL_WARN = 50
+
+local function checkFuel()
+    local fuel = turtle.getFuelLevel()
+    if fuel == "unlimited" then return end
+    if fuel <= 0 then
+        saveState()
+        print("[FUEL] Out of fuel! State saved to: " .. STATE_FILE)
+        print("[FUEL] Refuel the turtle then restart the script to resume.")
+        error("Out of fuel", 2)
+    end
+    if fuel < FUEL_WARN then
+        print("[FUEL] Low fuel warning: " .. fuel .. " remaining")
+        saveState()
     end
 end
 
@@ -58,6 +128,7 @@ end
 
 local function move(dir, blocks)
     for i = 1, blocks do
+        checkFuel()
         local success = false
         if     dir == "f" then success = turtle.forward()
         elseif dir == "u" then success = turtle.up()
@@ -74,6 +145,7 @@ local function move(dir, blocks)
             elseif dir == "u" then pos.y = pos.y + 1
             elseif dir == "d" then pos.y = pos.y - 1
             end
+            saveState()
             dbg(string.format("move %s %d/%d -> pos=(%d,%d,%d)",
                 dir, i, blocks, pos.x, pos.y, pos.z))
         else
@@ -89,7 +161,9 @@ end
 local function descendToGround()
     dbg("Descending to ground...")
     while turtle.down() do
+        checkFuel()
         pos.y = pos.y - 1
+        saveState()
         dbg("Descended, y=" .. pos.y)
     end
     dbg("Hit ground at y=" .. pos.y)
@@ -173,7 +247,14 @@ end
 -- ════════════════════════════════════════════════════════════
 
 print("Starting farmer. DEBUG=" .. tostring(DEBUG))
-print("Assumed start: facing=East pos=(0,0,0)")
+
+local resumed = loadState()
+if not resumed then
+    print("Fresh start: facing=East pos=(0,0,0)")
+else
+    print("NOTE: Position restored but script will run from the top of the cycle.")
+    print("Move turtle back to home position manually if needed, then restart.")
+end
 
 while true do
     dbgState("── Cycle START")
@@ -304,6 +385,7 @@ while true do
 
     -- Drop off
     dropOff()
+    clearState()
 
     dbgState("── Cycle END")
     print("Cycle complete. Restarting...")
